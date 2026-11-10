@@ -34,6 +34,9 @@
     --naver: #8fe0ac;         /* 네이버 지도 버튼 (파스텔 그린) */
     --on-naver: #1d5236;
     --star: #f0b429;
+  --ok-bg: #dff5e6; --ok-ink: #1d5236;
+  --maybe-bg: #fff1c9; --maybe-ink: #6b4e00;
+  --no-bg: #ffe1e1; --no-ink: #8a2b2b;
     --shadow: 0 4px 18px rgba(60, 100, 150, .10);
     --shadow-pop: 0 4px 18px rgba(60, 100, 150, .24);
     --map-bg: #e9f0f8;
@@ -56,6 +59,9 @@
     --naver: #7fd69c;
     --on-naver: #123b27;
     --star: #f5c451;
+    --ok-bg: #24402f; --ok-ink: #a8e6bf;
+    --maybe-bg: #44381a; --maybe-ink: #f3d58a;
+    --no-bg: #4a2b2f; --no-ink: #f4b4b4;
     --shadow: 0 4px 18px rgba(0, 0, 0, .35);
     --shadow-pop: 0 4px 18px rgba(0, 0, 0, .55);
     --map-bg: #222833;
@@ -119,11 +125,13 @@
   .stepper output { min-width: 56px; text-align: center; }
 
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
-  .row input[type=text] {
+  .row input[type=text], .row input[type=number] {
     flex: 1; min-width: 160px; height: 44px; padding: 0 14px; font: inherit; color: var(--ink);
     background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); outline: none;
   }
-  .row input[type=text]:focus { border-color: var(--main); }
+  .row input[type=text]:focus, .row input[type=number]:focus { border-color: var(--main); }
+  .hint-block { margin-top: 8px; font-size: 12px; line-height: 1.6; color: var(--sub); }
+  .hint-block b { font-weight: normal; color: var(--main-text); }
   .btn {
     height: 44px; padding: 0 16px; border: 0; border-radius: var(--r-sm); cursor: pointer;
     font: inherit; background: var(--main); color: var(--on-main);
@@ -163,8 +171,17 @@
   .result-title { font-size: 15px; }
   .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
   .result-grid #map { height: 600px; margin-top: 0; position: sticky; top: 12px; }
-  .tabs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 8px; }
-  .tabs .chip { white-space: nowrap; flex: none; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }   /* 옆으로 밀지 않고 줄바꿈해서 한눈에 */
+  .tabs .chip { white-space: nowrap; }
+  .tab-toggle { display: none; }
+  .budget-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }
+  .budget-row em { font-style: normal; color: var(--sub); font-size: 12px; }
+  .budget { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -2px 0 10px; font-size: 12px; }
+  .budget .tag { padding: 3px 9px; border-radius: 999px; }
+  .budget .tag.ok { background: var(--ok-bg); color: var(--ok-ink); }
+  .budget .tag.maybe { background: var(--maybe-bg); color: var(--maybe-ink); }
+  .budget .tag.no { background: var(--no-bg); color: var(--no-ink); }
+  .budget .est { color: var(--sub); }
   .place {
     background: var(--card); border: 2px solid transparent; border-radius: var(--r-card); padding: 14px 16px;
     margin-bottom: 10px; box-shadow: var(--shadow); cursor: pointer;
@@ -263,6 +280,15 @@
   @media (max-width: 800px) {
     .result-grid { grid-template-columns: 1fr; }
     .result-grid #map { height: 40vh; position: static; }
+    /* 모바일: 분류는 현재 것만 보이는 버튼 → 누르면 3열로 펼쳐서 전부 한눈에 */
+    .tab-toggle {
+      display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 8px;
+      padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r-sm);
+      background: var(--card); color: var(--ink); font: inherit; font-size: 14px; cursor: pointer;
+    }
+    .tabs { display: none; grid-template-columns: repeat(3, 1fr); }
+    .tabs-wrap.open .tabs { display: grid; }
+    .tabs .chip { white-space: normal; padding: 9px 4px; text-align: center; font-size: 12px; }
   }
   @media (max-width: 480px) {
     h1 { font-size: 20px; }
@@ -386,6 +412,32 @@ const PARTY_RULES = {
   small: ['분식', '김밥', '라멘', '버거'],
 };
 
+// 인당 가격대 "추정" 규칙 (위에서부터 먼저 맞는 규칙 적용). 카카오 데이터에는 가격이 없으므로
+// 음식 종류로 대략 짐작한 값이다. range: [최소, 최대] 원/1인. 필요하면 여기 숫자만 고치면 된다.
+const PRICE_RULES = [
+  { label: '오마카세·코스', range: [60000, 150000], cat: /오마카세|파인다이닝|코스요리/, name: /오마카세|다이닝|코스/ },
+  { label: '한정식·룸', range: [35000, 80000], cat: /한정식|룸/, name: /한정식|룸/ },
+  { label: '스테이크·프렌치', range: [35000, 80000], cat: /스테이크|프랑스|프렌치/, name: /스테이크|프렌치/ },
+  { label: '횟집', range: [35000, 80000], cat: /횟집|(^|[>\s,])회($|[\s,])/, name: /횟집|활어|수산/ },
+  { label: '고기·구이', range: [18000, 45000], cat: /육류|고기|삼겹|갈비|구이|곱창|막창|양꼬치|족발|보쌈/, name: /고기|삼겹|갈비|곱창|막창|양꼬치/ },
+  { label: '뷔페', range: [25000, 50000], cat: /뷔페/, name: /뷔페/ },
+  { label: '초밥·스시', range: [25000, 60000], cat: /초밥|스시/, name: /스시|초밥/ },
+  { label: '술집', range: [20000, 50000], cat: /술집|주점|호프|이자카야|포차|와인|바\(BAR\)/, name: /이자카야|포차|호프|와인바|술집/ },
+  { label: '면·덮밥·돈까스', range: [9000, 16000], cat: /라멘|우동|소바|돈까스|돈가스|덮밥|카레|칼국수|국수|냉면/, name: /라멘|우동|소바|돈까스|칼국수|국수|냉면/ },
+  { label: '국밥·백반', range: [8000, 15000], cat: /국밥|해장국|순대|설렁탕|곰탕|백반|찌개|감자탕/, name: /국밥|해장국|설렁탕|곰탕|백반|찌개/ },
+  { label: '이탈리안·양식', range: [15000, 35000], cat: /이탈리안|양식|파스타|브런치|패밀리/, name: /파스타|브런치/ },
+  { label: '중식', range: [9000, 25000], cat: /중식|중국|짜장|짬뽕|마라/, name: /짜장|짬뽕|마라/ },
+  { label: '일식', range: [15000, 35000], cat: /일식|일본/ },
+  { label: '패스트푸드·치킨', range: [6000, 15000], cat: /패스트푸드|햄버거|치킨/, name: /버거|치킨/ },
+  { label: '분식·김밥', range: [4000, 9000], cat: /분식|김밥|떡볶이/, name: /김밥|떡볶이/ },
+  { label: '카페·디저트', range: [4000, 12000], cat: /카페|간식|제과|베이커리|디저트/, name: /카페|커피/ },
+  { label: '아시안', range: [10000, 20000], cat: /아시아|베트남|태국|인도/ },
+  { label: '한식', range: [9000, 20000], cat: /한식/ },
+];
+const PRICE_DEFAULT = { label: '기타', range: [10000, 25000] };
+
+const BUDGET_CHIPS = [[0, '상관없음'], [10000, '1만원'], [15000, '1.5만원'], [20000, '2만원'], [30000, '3만원'], [50000, '5만원']];
+
 const SEARCH_BUDGET = 12;   // 추천 1회당 검색 API 최대 호출 수
 
 /* ───────────────────────── 유틸 ───────────────────────── */
@@ -395,6 +447,9 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const walkMin = m => Math.max(1, Math.ceil(m / 80));   // 80m/분
+
+// 15000 → "1.5만", 9000 → "9천"
+const won = n => (n >= 10000 ? `${+(n / 10000).toFixed(1)}만` : `${n / 1000}천`);
 
 function naverMapUrl(p) {
   // 식당명 + 주소의 구/동으로 검색 → 같은 이름의 다른 지점 혼동 방지
@@ -421,6 +476,8 @@ const state = {
   exclude: new Set(),
   center: null,        // { lat, lng, regionName }
   tab: 'BEST',
+  budget: null,        // 인당 예산(원). null이면 상관없음
+  budgetOnly: true,    // 예산에 안 맞는 곳 숨기기
   picked: new Set(),   // 공 굴리기 후보 id
 };
 
@@ -667,6 +724,17 @@ const Recommender = {
     return [...places].sort((a, b) =>
       (b.score?.total ?? 0) - (a.score?.total ?? 0) || a.distance - b.distance);
   },
+  // 카카오 데이터에는 가격이 없다. 음식 종류로 인당 가격대를 "추정"할 뿐이다 (PRICE_RULES)
+  priceOf(p) {
+    return PRICE_RULES.find(r => r.cat.test(p.category || '') || (r.name && r.name.test(p.name || ''))) || PRICE_DEFAULT;
+  },
+  // 인당 예산 대비 가능(ok) / 애매(maybe) / 어려움(no). 예산이 없으면 null
+  budgetFit(p, budget) {
+    if (!budget) return null;
+    const { range: [min, max], label } = this.priceOf(p);
+    const level = budget >= max ? 'ok' : budget >= min ? 'maybe' : 'no';
+    return { level, min, max, label };
+  },
   best(places, n = 5) {
     const meals = places.filter(p => !p.secondary && this.groupOf(p.category).key !== '카페/디저트');
     return this.sort(meals).slice(0, n);
@@ -717,6 +785,8 @@ function renderForm() {
     `<button type="button" class="chip" data-occasion="${k}" aria-pressed="${k === state.occasion}">${p.label}</button>`).join('');
   const distChips = DISTANCE_OPTIONS.map(d =>
     `<button type="button" class="chip" data-radius="${d.radius}" aria-pressed="${d.radius === state.radius}">${d.label}</button>`).join('');
+  const budgetChips = BUDGET_CHIPS.map(([v, label]) =>
+    `<button type="button" class="chip" data-budget="${v}" aria-pressed="${v === (state.budget || 0)}">${label}</button>`).join('');
   const excludeChips = EXCLUDE_OPTIONS.map(x =>
     `<button type="button" class="chip" data-exclude="${x.group}" aria-pressed="false">${x.label} 제외</button>`).join('');
 
@@ -730,6 +800,15 @@ function renderForm() {
           <output id="people">${state.people}명</output>
           <button type="button" id="plus" aria-label="인원 늘리기">＋</button>
         </div>
+      </div>
+
+      <div class="field">
+        <label for="budget">인당 예산 <span class="hint">선택</span></label>
+        <div class="row">
+          <input type="number" id="budget" inputmode="numeric" min="0" step="1000" placeholder="예: 15000 (원)" value="${state.budget || ''}">
+        </div>
+        <div class="chips" id="budgetChips" style="margin-top:8px">${budgetChips}</div>
+        <div class="hint-block">※ 카카오 데이터에는 가격이 없어서 음식 종류로 대략 <b>추정</b>해요. 실제 가격은 🟢 네이버 지도에서 확인하세요.</div>
       </div>
 
       <div class="field">
@@ -774,7 +853,11 @@ function renderForm() {
             <button type="button" class="btn" id="roll" disabled>🎲 공 굴리기!</button>
             <span id="pickCount"></span>
           </div>
-          <div class="tabs" id="tabs"></div>
+          <div id="budgetRow" class="budget-row"></div>
+          <div class="tabs-wrap" id="tabsWrap">
+            <button type="button" class="tab-toggle" id="tabToggle" aria-label="분류 펼치기"></button>
+            <div class="tabs" id="tabs"></div>
+          </div>
           <div id="list"></div>
           <div class="api-note" id="apiNote"></div>
           <div class="api-note" id="exNote"></div>
@@ -825,6 +908,22 @@ function bindForm() {
     state.people = Math.min(30, Math.max(1, n));
     $('#people').textContent = `${state.people}명`;
   };
+  const budgetInput = $('#budget');
+  const syncBudget = () => document.querySelectorAll('[data-budget]').forEach(b =>
+    b.setAttribute('aria-pressed', +b.dataset.budget === (state.budget || 0)));
+  budgetInput.oninput = () => {
+    const v = Math.round(Number(budgetInput.value));
+    state.budget = v > 0 ? Math.min(v, 1000000) : null;
+    syncBudget();
+  };
+  $('#budgetChips').onclick = e => {
+    const b = e.target.closest('[data-budget]');
+    if (!b) return;
+    state.budget = +b.dataset.budget || null;
+    budgetInput.value = state.budget || '';
+    syncBudget();
+  };
+
   $('#minus').onclick = () => setPeople(state.people - 1);
   $('#plus').onclick = () => setPeople(state.people + 1);
 
@@ -1034,8 +1133,13 @@ function computeView() {
   };
   const visible = places
     .filter(p => !state.exclude.has(Recommender.groupOf(p.category).key) && !Store.isExcluded(p.id))
-    .map(p => ({ ...p, score: Recommender.score(p, ctx) }));
-  view = { visible, best: Recommender.best(visible), groups: Recommender.group(visible), all: Recommender.sort(visible) };
+    .map(p => ({ ...p, score: Recommender.score(p, ctx), budget: Recommender.budgetFit(p, state.budget) }));
+  const noCount = visible.filter(p => p.budget?.level === 'no').length;   // 예산이 어려운 곳 수
+  const shown = state.budget && state.budgetOnly ? visible.filter(p => p.budget.level !== 'no') : visible;
+  view = {
+    visible: shown, noCount,
+    best: Recommender.best(shown), groups: Recommender.group(shown), all: Recommender.sort(shown),
+  };
 }
 
 function renderResults() {
@@ -1051,11 +1155,16 @@ function refreshResults({ remap = false, resetPicks = false } = {}) {
   const n = lastRun.places.filter(p => Store.isExcluded(p.id)).length;
   $('#exNote').innerHTML = n ? `<button type="button" class="mini-btn" id="unexclude">🚫 제외한 ${n}곳 되돌리기</button>` : '';
 
+  renderBudgetRow();
+
   if (!view.visible.length) {
     MapView.clearPlaces();
+    $('#tabToggle').innerHTML = '';
     state.picked = new Set();
     $('#tabs').innerHTML = '';
-    $('#list').innerHTML = `<div class="empty">조건에 맞는 음식점을 찾지 못했어요.<br><button type="button" class="btn" id="widen">반경을 넓혀볼까요?</button></div>`;
+    $('#list').innerHTML = `<div class="empty">${view.noCount && state.budgetOnly
+      ? '예산에 맞는 곳이 없어요.<br>위의 "숨기기"를 끄면 모두 볼 수 있어요.<br>'
+      : '조건에 맞는 음식점을 찾지 못했어요.<br>'}<button type="button" class="btn" id="widen">반경을 넓혀볼까요?</button></div>`;
     return updateRollbar();
   }
 
@@ -1077,6 +1186,22 @@ function refreshResults({ remap = false, resetPicks = false } = {}) {
   renderTab();
 }
 
+function renderBudgetRow() {
+  const el = $('#budgetRow');
+  if (!state.budget) { el.innerHTML = ''; return; }
+  const n = view.noCount;
+  el.innerHTML = `
+    <span>💰 인당 ${state.budget.toLocaleString('ko-KR')}원 기준 <em>(가격대는 추정)</em></span>
+    <button type="button" class="chip" id="budgetOnly" aria-pressed="${state.budgetOnly}">❌ 예산 안 맞는 곳 숨기기${n ? ` (${n})` : ''}</button>`;
+}
+
+function budgetHtml(p) {
+  const b = p.budget;
+  if (!b) return '';
+  const tag = { ok: '✅ 예산 가능', maybe: '⚠️ 애매해요 (메뉴에 따라)', no: '❌ 예산 초과 가능성 높음' }[b.level];
+  return `<div class="budget"><span class="tag ${b.level}">${tag}</span><span class="est" title="카카오 데이터에는 가격이 없어 음식 종류로 추정한 값이에요">추정 ${won(b.min)}~${won(b.max)}원 · ${esc(b.label)}</span></div>`;
+}
+
 function currentList() {
   if (state.tab === 'BEST') return view.best;
   if (state.tab === 'ALL') return view.all;
@@ -1093,6 +1218,9 @@ function renderTabs() {
   tabs.push({ key: 'ALL', label: `📋 전체 ${view.all.length}` });   // 맨 끝: 모든 후보를 점수순으로
   $('#tabs').innerHTML = tabs.map(t =>
     `<button type="button" class="chip" data-tab="${esc(t.key)}" aria-pressed="${t.key === state.tab}">${esc(t.label)}</button>`).join('');
+  const cur = tabs.find(t => t.key === state.tab);   // 모바일: 현재 분류만 보이는 접힘 버튼
+  const open = $('#tabsWrap').classList.contains('open');
+  $('#tabToggle').innerHTML = `<span>분류 · ${esc(cur ? cur.label : '')}</span><span>${open ? '▲' : '▼'}</span>`;
 }
 
 function renderTab() {
@@ -1118,6 +1246,7 @@ function cardHtml(p) {
         <span class="score">${p.score.total}점</span>
       </div>
       <div class="meta">${p.distance}m · 도보 ${walkMin(p.distance)}분</div>
+      ${budgetHtml(p)}
       <details class="why">
         <summary>왜 추천?</summary>
         ${p.score.reasons.length ? `<ul>${p.score.reasons.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
@@ -1298,6 +1427,7 @@ function bindResult() {
     const b = e.target.closest('[data-tab]');
     if (!b) return;
     state.tab = b.dataset.tab;
+    $('#tabsWrap').classList.remove('open');   // 모바일: 고르면 접기
     state.picked = new Set(currentList().slice(0, 8).map(p => p.id));   // 탭을 바꾸면 후보도 그 탭 상위 8개로
     renderTabs();
     renderTab();
@@ -1339,6 +1469,16 @@ function bindResult() {
     refreshResults({ remap: true, resetPicks: true });
   };
   $('#roll').onclick = startRoll;
+  $('#tabToggle').onclick = () => {
+    $('#tabsWrap').classList.toggle('open');
+    renderTabs();
+  };
+  $('#budgetRow').onclick = e => {
+    if (!e.target.closest('#budgetOnly')) return;
+    state.budgetOnly = !state.budgetOnly;
+    computeView();
+    refreshResults({ remap: true, resetPicks: true });
+  };
 
   $('#spin').onclick = spin;
   $('#backList').onclick = () => {

@@ -122,7 +122,13 @@
   .stepper { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; }
   .stepper button { width: 42px; height: 42px; border: 0; background: var(--card); font: inherit; font-size: 20px; cursor: pointer; color: var(--ink); }
   .stepper button:hover { background: var(--main-soft); }
-  .stepper output { min-width: 56px; text-align: center; }
+  .stepper input {
+    width: 56px; height: 42px; border: 0; padding: 0; text-align: center; font: inherit; font-size: 16px;
+    color: var(--ink); background: transparent; outline: none; -moz-appearance: textfield; appearance: textfield;
+  }
+  .stepper input::-webkit-inner-spin-button, .stepper input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  .stepper .unit { padding-right: 12px; color: var(--sub); }
+  .stepper:focus-within { border-color: var(--main); }
 
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
   .row input[type=text], .row input[type=number] {
@@ -797,7 +803,8 @@ function renderForm() {
         <span class="label">인원</span>
         <div class="stepper">
           <button type="button" id="minus" aria-label="인원 줄이기">−</button>
-          <output id="people">${state.people}명</output>
+          <input type="number" id="people" inputmode="numeric" min="1" max="100" value="${state.people}" aria-label="인원">
+          <span class="unit">명</span>
           <button type="button" id="plus" aria-label="인원 늘리기">＋</button>
         </div>
       </div>
@@ -904,10 +911,18 @@ async function applyCenter(lat, lng, label) {
 }
 
 function bindForm() {
+  const clampPeople = n => Math.min(100, Math.max(1, Math.round(n)));
   const setPeople = n => {
-    state.people = Math.min(30, Math.max(1, n));
-    $('#people').textContent = `${state.people}명`;
+    state.people = clampPeople(n);
+    $('#people').value = state.people;
   };
+  // 직접 입력: 타이핑 중에는 입력값을 건드리지 않고, 유효한 숫자일 때만 반영 → 입력을 마치면(change) 보정
+  $('#people').oninput = e => {
+    const n = Number(e.target.value);
+    if (e.target.value !== '' && n >= 1) state.people = clampPeople(n);
+  };
+  $('#people').onchange = () => setPeople(Number($('#people').value) || state.people);
+  $('#people').onkeydown = e => { if (e.key === 'Enter') e.target.blur(); };
   const budgetInput = $('#budget');
   const syncBudget = () => document.querySelectorAll('[data-budget]').forEach(b =>
     b.setAttribute('aria-pressed', +b.dataset.budget === (state.budget || 0)));

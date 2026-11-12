@@ -1,7 +1,7 @@
 // 앱 셸(HTML·아이콘)만 캐시한다.
 // 카카오 SDK/API 응답은 약관상 저장하면 안 되고 항상 최신이어야 하므로 절대 캐시하지 않는다.
 // 배포 때마다 VERSION을 올리면 이전 캐시가 정리된다.
-const VERSION = 'foodmap-v2';
+const VERSION = 'foodmap-v3';
 const SHELL = ['./', './index.html', './manifest.json', './icons/icon-192.png', './icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

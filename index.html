@@ -306,6 +306,21 @@
   }
   .menu-row .mn { font-size: 15px; word-break: keep-all; }
   .menu-row .mp { margin-top: 2px; font-size: 12px; color: var(--sub); }
+  .paste-box { margin: -6px 0 16px; padding: 12px 14px; border: 1px dashed var(--line); border-radius: var(--r-sm); }
+  .paste-box summary { cursor: pointer; font-size: 14px; color: var(--main-text); }
+  .paste-box textarea {
+    display: block; width: 100%; margin-top: 10px; padding: 10px 12px; font: inherit; font-size: 14px; color: var(--ink);
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); outline: none; resize: vertical;
+  }
+  .paste-box textarea:focus { border-color: var(--main); }
+  .pv-head { margin-top: 12px; font-size: 13px; color: var(--sub); }
+  .pv-row { display: grid; grid-template-columns: 1fr 104px 36px; gap: 6px; margin-top: 6px; }
+  .pv-row input {
+    width: 100%; min-width: 0; height: 40px; padding: 0 10px; font: inherit; font-size: 14px; color: var(--ink);
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); outline: none;
+  }
+  .pv-row input:focus { border-color: var(--main); }
+  .pv-row button { border: 0; border-radius: var(--r-sm); background: var(--main-soft); color: var(--sub); font: inherit; cursor: pointer; }
   .link-del { margin-left: 6px; padding: 0; border: 0; background: none; font: inherit; font-size: 12px; color: var(--sub); text-decoration: underline; cursor: pointer; }
   .qwrap { text-align: right; }
   .qty { display: inline-flex; align-items: center; gap: 6px; }
@@ -1018,6 +1033,14 @@ function renderForm() {
             <button type="button" class="btn" id="menuAdd">추가</button>
           </div>
         </div>
+        <details class="paste-box" id="pasteBox">
+          <summary>📋 붙여넣어서 한 번에 추가</summary>
+          <div class="hint-block">네이버 지도 등에서 메뉴 글자를 복사해 붙여넣으면 메뉴와 가격을 읽어 줘요.
+            <b>모듬회 60,000원</b>처럼 한 줄이어도, 이름 아래 줄에 가격이 있어도 돼요. 추가하기 전에 고칠 수 있어요.</div>
+          <textarea id="pasteText" rows="6" placeholder="여기에 붙여넣기 (예)&#10;모듬회 60,000원&#10;소주 5,000원"></textarea>
+          <div class="row" style="margin-top:8px"><button type="button" class="btn" id="pasteParse">메뉴 인식하기</button></div>
+          <div id="pastePreview"></div>
+        </details>
         <div id="menuList"></div>
         <div class="calc-sum" id="calcSum"></div>
       </div>
@@ -1797,6 +1820,7 @@ function calcPick(id) {
   calc.qty = {};
   $('#menuHits').innerHTML = '';
   $('#menuStatus').textContent = '';
+  $('#pastePreview').innerHTML = '';   // 다른 가게로 바꾸면 인식 중이던 미리보기는 버린다
   $('#menuPlace').hidden = false;
   $('#storeHead').innerHTML = `
     <div><div class="nm">${esc(p.name)}</div><div class="ad">${esc(p.roadAddress || p.address)}</div></div>
@@ -1883,7 +1907,107 @@ function calcAddItem() {
   renderMenuList();
 }
 
+/* 붙여넣은 메뉴 글자 → [{ n, p }].
+   · "이름 12,000원" 한 줄형과 "이름 ↵ 12,000원" 두 줄형을 모두 읽는다.
+   · 가격은 쉼표 숫자·'원'이 붙은 숫자·1,000 이상 숫자만 인정 ("300g", "2인"은 가격이 아님). */
+const PRICE_RE = /(\d{1,3}(?:,\d{3})+|\d{3,7})(\s*원)?(?![0-9A-Za-z가-힣])/;
+const NOISE_RE = /^(대표|인기|추천|사진|new|best|베스트|품절|메뉴|더보기|접기|펼치기|\d+)$/i;
+
+function parseMenuText(text) {
+  const lines = String(text).split(/\r?\n/).map(s => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
+  const entries = [];   // { kind: 'same' | 'price' | 'text', name?, price? }
+  for (const line of lines) {
+    const m = PRICE_RE.exec(line);
+    const price = m ? Number(m[1].replace(/,/g, '')) : 0;
+    const isPrice = m && price >= 100 && price <= MENU_PRICE_MAX && (m[2] || m[1].includes(',') || price >= 1000);
+    if (isPrice) {
+      const name = line.slice(0, m.index).replace(/[\s·.…\-:~₩￦]+$/, '').replace(/^[\s·.…\-:~]+/, '').trim();
+      if (/[가-힣A-Za-z]/.test(name)) entries.push({ kind: 'same', name, price });
+      else entries.push({ kind: 'price', price });
+    } else if (/[가-힣A-Za-z]/.test(line) && !NOISE_RE.test(line)) {
+      entries.push({ kind: 'text', name: line });
+    }
+  }
+
+  const sameCount = entries.filter(e => e.kind === 'same').length;
+  const priceCount = entries.filter(e => e.kind === 'price').length;
+  const items = [];
+  if (sameCount >= priceCount) {
+    // 한 줄형이 대부분: 가격 없는 줄(설명 등)은 무시
+    entries.filter(e => e.kind === 'same').forEach(e => items.push({ n: e.name, p: e.price }));
+  } else {
+    // 두 줄형: 가격 줄 앞에 모인 글자 중 첫 줄을 메뉴명으로 (그 아래 설명 줄은 버림)
+    let pending = [];
+    for (const e of entries) {
+      if (e.kind === 'text') pending.push(e.name);
+      else if (e.kind === 'same') { items.push({ n: e.name, p: e.price }); pending = []; }
+      else { if (pending.length) items.push({ n: pending[0], p: e.price }); pending = []; }
+    }
+  }
+  const seen = new Set();
+  return items
+    .map(it => ({ n: it.n.slice(0, MENU_NAME_MAX), p: it.p }))
+    .filter(it => { const key = `${it.n}|${it.p}`; if (seen.has(key)) return false; seen.add(key); return true; });
+}
+
+function renderPastePreview(items) {
+  const box = $('#pastePreview');
+  if (!items.length) {
+    box.innerHTML = '<div class="pay-empty" style="margin-top:10px">메뉴와 가격을 찾지 못했어요. 가격이 함께 복사됐는지 확인해 주세요.</div>';
+    return;
+  }
+  box.innerHTML = `
+    <div class="pv-head">${items.length}개를 찾았어요. 틀린 곳은 고치고, 필요 없는 건 ✕로 지운 뒤 추가하세요.</div>
+    ${items.map(it => `
+      <div class="pv-row">
+        <input type="text" class="pv-n" maxlength="${MENU_NAME_MAX}" value="${esc(it.n)}" aria-label="메뉴명">
+        <input type="number" class="pv-p" inputmode="numeric" min="0" max="${MENU_PRICE_MAX}" value="${it.p}" aria-label="가격">
+        <button type="button" data-pvdel aria-label="이 메뉴 빼기">✕</button>
+      </div>`).join('')}
+    <div class="row" style="margin-top:10px">
+      <button type="button" class="btn" id="pasteCommit">메뉴 추가하기</button>
+      <button type="button" class="btn ghost" id="pasteCancel">취소</button>
+    </div>`;
+}
+
+function pasteCommit() {
+  const existing = Store.menuOf(calc.place.id);
+  const items = existing.slice();
+  let added = 0, skipped = 0;
+  for (const row of document.querySelectorAll('#pastePreview .pv-row')) {
+    const n = row.querySelector('.pv-n').value.trim().slice(0, MENU_NAME_MAX);
+    const raw = row.querySelector('.pv-p').value;
+    const p = Math.round(Number(raw));
+    if (!n || raw === '' || !Number.isFinite(p) || p < 0 || p > MENU_PRICE_MAX) { skipped++; continue; }
+    if (items.some(m => m.n === n && m.p === p)) { skipped++; continue; }   // 이미 있는 메뉴
+    if (items.length >= MENU_ITEMS_MAX) { skipped++; continue; }
+    items.push({ k: Math.random().toString(36).slice(2, 8), n, p });
+    added++;
+  }
+  if (!added) return toast('추가할 메뉴가 없어요. 이름과 가격을 확인해 주세요.');
+  Store.setMenu(calc.place.id, items);
+  $('#pasteText').value = '';
+  $('#pastePreview').innerHTML = '';
+  $('#pasteBox').open = false;
+  renderMenuList();
+  toast(`메뉴 ${added}개를 추가했어요.${skipped ? ` (${skipped}개는 건너뛰었어요)` : ''}`);
+}
+
 function bindCalc() {
+  $('#pasteParse').onclick = () => {
+    if (!$('#pasteText').value.trim()) return toast('붙여넣을 메뉴 글자를 먼저 입력해 주세요.');
+    renderPastePreview(parseMenuText($('#pasteText').value));
+  };
+  $('#pastePreview').onclick = e => {
+    if (e.target.closest('[data-pvdel]')) {
+      e.target.closest('.pv-row').remove();
+      const left = document.querySelectorAll('#pastePreview .pv-row').length;
+      if (!left) $('#pastePreview').innerHTML = '';
+      return;
+    }
+    if (e.target.closest('#pasteCommit')) return pasteCommit();
+    if (e.target.closest('#pasteCancel')) $('#pastePreview').innerHTML = '';
+  };
   $('#menuBack').onclick = () => {
     showView(calcPrev);
     if (calcPrev === 'form' && state.center) MapView.showCenter(state.center, state.radius);

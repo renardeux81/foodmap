@@ -12,6 +12,14 @@
 })();
 </script>
 <title>상황별 맛집 추천기</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#a8d0ff">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="맛집추천">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <style>
   /* 배달의민족 주아체 (눈누 CDN). 굵기가 하나뿐이라 가짜 볼드는 끈다 */
   @font-face {
@@ -1567,6 +1575,11 @@ function boot() {
 }
 initChrome();
 boot();
+
+// PWA: https(또는 localhost)에서만 서비스 워커 등록
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  navigator.serviceWorker.register('service-worker.js').catch(() => {});
+}
 </script>
 </body>
 </html>

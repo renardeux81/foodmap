@@ -98,7 +98,7 @@
     font: inherit; font-size: 18px; cursor: pointer; padding: 0;
   }
   .icon-btn:hover, .icon-btn[aria-expanded="true"] { background: var(--main-soft); }
-  .theme-btn { margin-left: auto; }
+  .pay-btn { margin-left: auto; }
   .bubble {
     position: absolute; z-index: 30; top: calc(100% + 12px); left: 0; width: min(340px, 100%);
     background: var(--card); border: 1px solid var(--line); border-radius: var(--r-card);
@@ -289,6 +289,12 @@
   .win-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
   @keyframes pop { from { transform: scale(.92); opacity: 0; } to { transform: none; opacity: 1; } }
 
+  /* 밥값내기 */
+  .chip.name::after { content: ' ✕'; color: var(--sub); font-size: 11px; }
+  .pay-empty { font-size: 13px; color: var(--sub); }
+  #payBoard { margin-top: 14px; }
+  #payBoard .c-emoji { font-size: 22px; }
+
   .notice { margin: 24px 0 0; text-align: center; font-size: 12px; color: var(--sub); }
 
   @media (max-width: 800px) {
@@ -322,6 +328,7 @@
         <text x="12" y="14" text-anchor="middle" font-size="9.5" fill="currentColor" font-family="sans-serif" font-weight="700">?</text>
       </svg>
     </button>
+    <button type="button" class="icon-btn pay-btn" id="payBtn" aria-label="밥값내기">🍚</button>
     <button type="button" class="icon-btn theme-btn" id="themeBtn"></button>
     <div class="bubble" id="helpBubble" role="dialog" aria-label="사용 설명" hidden>
       <h2>이렇게 써요</h2>
@@ -330,7 +337,7 @@
         <li>점수가 높은 순으로 추천해 줘요. 카드나 지도 핀을 눌러 비교해 보세요.</li>
         <li>마음에 드는 곳에 체크하고 <b>🎲 공 굴리기</b>로 오늘의 1곳을 뽑아요.</li>
       </ol>
-      <p class="tip">리뷰·영업시간·메뉴는 🟢 네이버 지도 버튼에서 확인하세요.</p>
+      <p class="tip">리뷰·영업시간·메뉴는 🟢 네이버 지도 버튼에서 확인하세요.<br>밥값 낼 사람은 위쪽 🍚 버튼에서 뽑을 수 있어요.</p>
     </div>
   </header>
   <p class="lead">인원·위치·식사 형태를 알려주면 주변 음식점을 골라드려요.</p>
@@ -453,6 +460,8 @@ const PRICE_DEFAULT = { label: '기타', range: [10000, 25000] };
 const BUDGET_CHIPS = [[0, '상관없음'], [10000, '1만원'], [15000, '1.5만원'], [20000, '2만원'], [30000, '3만원'], [50000, '5만원']];
 
 const SEARCH_BUDGET = 12;   // 추천 1회당 검색 API 최대 호출 수
+const PAY_MAX = 100;        // 밥값내기 최대 참가자 수
+const PAY_NAME_MAX = 10;    // 참가자 이름 최대 글자 수
 
 /* ───────────────────────── 유틸 ───────────────────────── */
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -479,7 +488,7 @@ function toast(msg, ms = 2600) {
   toast._t = setTimeout(() => el.classList.remove('show'), ms);
 }
 
-function setStep(n) {
+function setStep(n) {   // n=0이면 전부 끔 (밥값내기 화면)
   [...$('#steps').children].forEach((el, i) => el.classList.toggle('on', i === n - 1));
 }
 
@@ -893,6 +902,30 @@ function renderForm() {
         </div>
         <div id="mapSlotRoll"></div>
       </div>
+    </section>
+
+    <section id="viewPay" hidden>
+      <div class="result-top">
+        <button type="button" class="btn ghost" id="payBack">← 돌아가기</button>
+        <div class="result-title">🍚 밥값내기</div>
+      </div>
+      <div class="card">
+        <div class="field">
+          <label for="payName">참가자 <span class="hint">2~100명 · 이름은 이 기기에 저장돼요</span></label>
+          <div class="row">
+            <input type="text" id="payName" maxlength="40" placeholder="이름 입력 후 Enter (쉼표로 여러 명)" autocomplete="off">
+            <button type="button" class="btn" id="payAdd">추가</button>
+          </div>
+          <div class="chips" id="payChips" style="margin-top:10px"></div>
+          <div class="row" style="margin-top:10px">
+            <button type="button" class="btn ghost" id="payFill"></button>
+            <button type="button" class="btn ghost" id="payClear">모두 지우기</button>
+          </div>
+        </div>
+        <button type="button" class="btn block" id="payRoll" disabled>🎲 누가 낼까?</button>
+      </div>
+      <div class="board" id="payBoard" hidden></div>
+      <div class="winner" id="payWinner" hidden></div>
     </section>`;
 
   bindForm();
@@ -1019,7 +1052,8 @@ const today = (daysAgo = 0) => {
 
 const Store = {
   KEY: 'foodmap.v1',
-  data: { favorites: [], excluded: [], visits: [] },   // { favorites:[id], excluded:[id], visits:[{id,date}] }
+  // { favorites:[id], excluded:[id], visits:[{id,date}], names:[밥값내기 참가자 이름(사용자 입력)] }
+  data: { favorites: [], excluded: [], visits: [], names: [] },
   load() {
     try {
       const d = JSON.parse(localStorage.getItem(this.KEY) || 'null') || {};
@@ -1030,11 +1064,18 @@ const Store = {
         excluded: ids(d.excluded),
         visits: (Array.isArray(d.visits) ? d.visits : []).filter(v =>
           v && typeof v.id === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v.date) && v.date >= cutoff),
+        names: (Array.isArray(d.names) ? d.names : [])
+          .filter(x => typeof x === 'string' && x.trim())
+          .map(x => x.trim().slice(0, PAY_NAME_MAX)).slice(0, PAY_MAX),
       };
     } catch { /* 저장소를 못 쓰면 이번 세션 메모리에서만 동작 */ }
   },
   save() {
     try { localStorage.setItem(this.KEY, JSON.stringify(this.data)); } catch { /* 무시 */ }
+  },
+  setNames(names) {
+    this.data.names = names;
+    this.save();
   },
   isFav(id) { return this.data.favorites.includes(id); },
   toggleFav(id) {
@@ -1082,12 +1123,20 @@ const VIEWS = {
   form: { section: '#viewForm', mapSlot: '#mapSlotForm', step: 1 },
   result: { section: '#viewResult', mapSlot: '#mapSlotResult', step: 2 },
   roll: { section: '#viewRoll', mapSlot: '#mapSlotRoll', step: 3 },
+  pay: { section: '#viewPay', mapSlot: null, step: 0 },   // 지도 없는 독립 화면
 };
+let curView = 'form';
 
 function showView(name) {
+  curView = name;
   Object.entries(VIEWS).forEach(([k, v]) => { $(v.section).hidden = k !== name; });
   setStep(VIEWS[name].step);
-  $(VIEWS[name].mapSlot).appendChild($('#map'));
+  const v = VIEWS[name];
+  if (!v.mapSlot) {
+    $('#map').classList.add('hidden');
+    return;
+  }
+  $(v.mapSlot).appendChild($('#map'));
   $('#map').classList.toggle('hidden', name === 'form' && !state.center);
   MapView.relayout();
   if (MapView.circle) MapView.fit();
@@ -1319,7 +1368,7 @@ function excludePlace(id) {
 
 /* ───────────────────────── 공 굴리기 ───────────────────────── */
 let rollItems = [];
-let rollTimer = null;
+let rollAnim = null;       // animateBall 핸들 ({ timer })
 let spinning = false;
 let winner = null;
 let pendingVisit = null;   // 이번 당첨으로 자동 기록된 방문 { id, date }
@@ -1354,12 +1403,33 @@ function startRoll() {
 }
 
 function stopRoll() {
-  clearTimeout(rollTimer);
+  if (rollAnim) clearTimeout(rollAnim.timer);
   spinning = false;
+  $('#spin').disabled = false;   // 도중에 화면을 떠나도 돌아왔을 때 다시 누를 수 있게
 }
 
-function setBall(pos) {
-  document.querySelectorAll('.cell').forEach((el, i) => el.classList.toggle('on', i === pos));
+function setBall(pos, boardSel = '#board') {
+  document.querySelectorAll(`${boardSel} .cell`).forEach((el, i) => el.classList.toggle('on', i === pos));
+}
+
+// 당첨 칸을 먼저 정하고, 마지막 위치가 그 칸이 되도록 이동 횟수를 역산해 점점 감속한다.
+// 공 굴리기·밥값내기가 함께 쓴다. 반환값의 timer를 clearTimeout하면 중단된다.
+function animateBall(n, onTick, onDone) {
+  const win = Math.floor(Math.random() * n);
+  const start = Math.floor(Math.random() * n);
+  const laps = Math.max(2, Math.ceil(24 / n));
+  const total = laps * n + ((win - start + n) % n);   // (start + total) % n === win
+  const h = { timer: null };
+  let i = 0;
+  const tick = () => {
+    onTick((start + i) % n);
+    if (i === total) return onDone(win);
+    const t = i / total;
+    h.timer = setTimeout(tick, 55 + 420 * t * t * t);   // 점점 감속
+    i++;
+  };
+  tick();
+  return h;
 }
 
 function undoPendingVisit() {
@@ -1367,7 +1437,6 @@ function undoPendingVisit() {
   pendingVisit = null;
 }
 
-// 당첨 칸을 먼저 정하고, 마지막 위치가 그 칸이 되도록 이동 횟수를 역산한다
 function spin() {
   if (spinning) return;
   spinning = true;
@@ -1375,30 +1444,16 @@ function spin() {
   winner = null;
   $('#winner').hidden = true;
   $('#spin').disabled = true;
-  document.querySelectorAll('.cell').forEach(el => el.classList.remove('on', 'win'));
+  document.querySelectorAll('#board .cell').forEach(el => el.classList.remove('on', 'win'));
 
-  const n = rollItems.length;
-  const win = Math.floor(Math.random() * n);
-  const start = Math.floor(Math.random() * n);
-  const laps = Math.max(2, Math.ceil(24 / n));
-  const total = laps * n + ((win - start + n) % n);   // (start + total) % n === win
-
-  let i = 0;
-  const tick = () => {
-    setBall((start + i) % n);
-    if (i === total) return finishRoll(win);
-    const t = i / total;
-    rollTimer = setTimeout(tick, 55 + 420 * t * t * t);   // 점점 감속
-    i++;
-  };
-  tick();
+  rollAnim = animateBall(rollItems.length, pos => setBall(pos), finishRoll);
 }
 
 function finishRoll(win) {
   spinning = false;
   const p = rollItems[win];
   winner = p;
-  document.querySelectorAll('.cell').forEach((el, i) => {
+  document.querySelectorAll('#board .cell').forEach((el, i) => {
     el.classList.remove('on');
     el.classList.toggle('win', i === win);
   });
@@ -1421,6 +1476,7 @@ function renderWinner() {
       <button type="button" class="btn" id="copy">📋 결과 복사</button>
       <a class="btn naver" href="${esc(naverMapUrl(p))}" target="_blank" rel="noopener">🟢 네이버 지도</a>
       <button type="button" class="btn ghost" id="visitToggle">${pendingVisit ? '✔ 방문 기록됨 (취소)' : '방문 기록하기'}</button>
+      <button type="button" class="btn ghost" id="payFromWin">🍚 밥값내기</button>
     </div>`;
 }
 
@@ -1440,7 +1496,139 @@ async function copyText(text) {
   }
 }
 
+/* ───────────────────────── 밥값내기 ─────────────────────────
+   맛집 검색·지도와 무관한 독립 화면. 이름은 사용자가 입력한 값이라 localStorage에 저장해도 된다. */
+let payPrev = 'form';      // 밥값내기를 열기 전 화면
+let payAnim = null;
+let payWinner = null;
+
+function payNames() { return Store.data.names; }
+
+function uniqueName(name, taken) {
+  if (!taken.includes(name)) return name;
+  let k = 2;
+  while (taken.includes(`${name}${k}`)) k++;
+  return `${name}${k}`;
+}
+
+function payResetResult() {
+  if (payAnim) clearTimeout(payAnim.timer);
+  payAnim = null;
+  payWinner = null;
+  $('#payBoard').hidden = true;
+  $('#payWinner').hidden = true;
+  $('#payRoll').textContent = '🎲 누가 낼까?';
+}
+
+function payChange(names) {
+  Store.setNames(names);
+  payResetResult();
+  renderPay();
+}
+
+function payAddNames(raw) {
+  const names = payNames().slice();
+  let full = false;
+  for (const part of String(raw).split(/[,\n]/)) {
+    const n = part.trim().slice(0, PAY_NAME_MAX);
+    if (!n) continue;
+    if (names.length >= PAY_MAX) { full = true; break; }
+    names.push(uniqueName(n, names));
+  }
+  if (full) toast(`참가자는 최대 ${PAY_MAX}명까지예요.`);
+  payChange(names);
+}
+
+function payFill() {
+  const names = payNames().slice();
+  for (let k = names.length + 1; names.length < Math.min(state.people, PAY_MAX); k++) {
+    names.push(uniqueName(`${k}번`, names));
+  }
+  payChange(names);
+}
+
+function renderPay() {
+  const names = payNames();
+  $('#payChips').innerHTML = names.length
+    ? names.map((n, i) => `<button type="button" class="chip name" data-i="${i}" aria-label="${esc(n)} 삭제">${esc(n)}</button>`).join('')
+    : '<span class="pay-empty">아직 참가자가 없어요. 이름을 추가하거나 아래 버튼으로 인원수만큼 채워 보세요.</span>';
+  $('#payFill').textContent = `${state.people}명으로 채우기`;
+  $('#payRoll').disabled = names.length < 2 || !!payAnim && !payWinner;
+}
+
+function openPay({ fill = false } = {}) {
+  if (!$('#viewPay')) return;           // 카카오 SDK 로딩 실패 등으로 화면이 아직 없을 때
+  if (curView !== 'pay') payPrev = curView;
+  if (curView === 'roll') stopRoll();   // 공 굴리기 도중이면 멈춘다
+  showView('pay');
+  payResetResult();
+  if (fill && payNames().length < 2) payFill();
+  renderPay();
+  window.scrollTo({ top: 0 });
+}
+
+function payShareText(name) {
+  return `🍚 오늘 밥값은 [${name}]님이 쏩니다! (${payNames().length}명 중 당첨)`;
+}
+
+function payRoll() {
+  const names = payNames();
+  if (names.length < 2 || (payAnim && !payWinner)) return;
+  payResetResult();
+  $('#payBoard').innerHTML = names.map((n, i) => `
+    <div class="cell" data-i="${i}">
+      <span class="ball">🔵</span>
+      <div class="c-emoji">🙋</div>
+      <div class="c-name">${esc(n)}</div>
+    </div>`).join('');
+  $('#payBoard').hidden = false;
+  $('#payRoll').disabled = true;
+  payAnim = animateBall(names.length, pos => setBall(pos, '#payBoard'), win => {
+    payWinner = names[win];
+    document.querySelectorAll('#payBoard .cell').forEach((el, i) => {
+      el.classList.remove('on');
+      el.classList.toggle('win', i === win);
+    });
+    const el = $('#payWinner');
+    el.hidden = false;
+    el.innerHTML = `
+      <div class="win-title">🎉 오늘 밥값은 <b>[${esc(payWinner)}]</b>님!</div>
+      <div class="win-sub">${names.length}명 중 당첨</div>
+      <div class="win-actions"><button type="button" class="btn" id="payCopy">📋 결과 복사</button></div>`;
+    $('#payRoll').textContent = '🎲 다시 뽑기';
+    renderPay();
+  });
+}
+
+function bindPay() {
+  $('#payBack').onclick = () => {
+    payResetResult();
+    showView(payPrev);
+    if (payPrev === 'form' && state.center) MapView.showCenter(state.center, state.radius);
+  };
+  const add = () => {
+    const input = $('#payName');
+    payAddNames(input.value);
+    input.value = '';
+    input.focus();
+  };
+  $('#payAdd').onclick = add;
+  $('#payName').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); add(); } };
+  $('#payChips').onclick = e => {
+    const b = e.target.closest('[data-i]');
+    if (!b) return;
+    payChange(payNames().filter((_, i) => i !== +b.dataset.i));
+  };
+  $('#payFill').onclick = payFill;
+  $('#payClear').onclick = () => payChange([]);
+  $('#payRoll').onclick = payRoll;
+  $('#payWinner').onclick = e => {
+    if (e.target.closest('#payCopy') && payWinner) copyText(payShareText(payWinner));
+  };
+}
+
 function bindResult() {
+  bindPay();
   $('#back').onclick = () => {
     runSeq++;
     showView('form');
@@ -1511,6 +1699,7 @@ function bindResult() {
   };
   $('#winner').onclick = e => {
     if (e.target.closest('#copy')) return copyText(shareText(winner));
+    if (e.target.closest('#payFromWin')) return openPay({ fill: true });
     if (e.target.closest('#visitToggle')) {
       if (pendingVisit) {
         undoPendingVisit();
@@ -1539,6 +1728,8 @@ function initChrome() {
     paintTheme();
   };
   paintTheme();
+
+  $('#payBtn').onclick = () => openPay();
 
   const btn = $('#helpBtn');
   const bubble = $('#helpBubble');

@@ -313,6 +313,8 @@
     background: var(--card); border: 1px solid var(--line); border-radius: var(--r-sm); outline: none; resize: vertical;
   }
   .paste-box textarea:focus { border-color: var(--main); }
+  .file-btn { display: inline-flex; align-items: center; cursor: pointer; }
+  .file-btn.busy { opacity: .5; pointer-events: none; }
   .pv-head { margin-top: 12px; font-size: 13px; color: var(--sub); }
   .pv-row { display: grid; grid-template-columns: 1fr 104px 36px; gap: 6px; margin-top: 6px; }
   .pv-row input {
@@ -1034,9 +1036,15 @@ function renderForm() {
           </div>
         </div>
         <details class="paste-box" id="pasteBox">
-          <summary>📋 붙여넣어서 한 번에 추가</summary>
-          <div class="hint-block">네이버 지도 등에서 메뉴 글자를 복사해 붙여넣으면 메뉴와 가격을 읽어 줘요.
-            <b>모듬회 60,000원</b>처럼 한 줄이어도, 이름 아래 줄에 가격이 있어도 돼요. 추가하기 전에 고칠 수 있어요.</div>
+          <summary>📋 붙여넣기 · 📷 사진으로 한 번에 추가</summary>
+          <div class="hint-block">네이버 지도의 메뉴 목록 화면을 <b>스크린샷</b>으로 찍어 올리면 글자를 읽어 줘요.
+            디자인이 화려한 메뉴판 사진이나 여러 단으로 된 메뉴판은 잘 못 읽을 수 있어요.
+            사진은 이 기기 안에서만 처리되고 서버로 보내지 않아요. 글자를 복사할 수 있다면 아래에 붙여넣어도 돼요.
+            <b>모듬회 60,000원</b>처럼 한 줄이어도, 이름 아래 줄에 가격이 있어도 읽어요. 추가하기 전에 고칠 수 있어요.</div>
+          <div class="row" style="margin-top:10px">
+            <label class="btn ghost file-btn" id="ocrLabel">📷 사진·스크린샷 선택<input type="file" id="menuImg" accept="image/*" hidden></label>
+          </div>
+          <div class="loc-status" id="ocrStatus"></div>
           <textarea id="pasteText" rows="6" placeholder="여기에 붙여넣기 (예)&#10;모듬회 60,000원&#10;소주 5,000원"></textarea>
           <div class="row" style="margin-top:8px"><button type="button" class="btn" id="pasteParse">메뉴 인식하기</button></div>
           <div id="pastePreview"></div>
@@ -1821,6 +1829,7 @@ function calcPick(id) {
   $('#menuHits').innerHTML = '';
   $('#menuStatus').textContent = '';
   $('#pastePreview').innerHTML = '';   // 다른 가게로 바꾸면 인식 중이던 미리보기는 버린다
+  if (!ocrBusy) $('#ocrStatus').textContent = '';
   $('#menuPlace').hidden = false;
   $('#storeHead').innerHTML = `
     <div><div class="nm">${esc(p.name)}</div><div class="ad">${esc(p.roadAddress || p.address)}</div></div>
@@ -1950,6 +1959,101 @@ function parseMenuText(text) {
     .filter(it => { const key = `${it.n}|${it.p}`; if (seen.has(key)) return false; seen.add(key); return true; });
 }
 
+/* ── 사진·스크린샷 → 글자 (Tesseract.js, 전부 이 기기 안에서 처리) ──
+   인식 도구와 한글 데이터(약 1.6MB)는 처음 쓸 때만 내려받고, 이후엔 브라우저가 저장해 둔다. */
+const TESS_JS = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+const TESS_LANG = 'https://cdn.jsdelivr.net/npm/@tesseract.js-data/kor@1.0.0/4.0.0_best_int';
+let ocrWorker = null;
+let ocrBusy = false;
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('SCRIPT_LOAD_FAILED'));
+    document.head.appendChild(s);
+  });
+}
+
+// 큰 사진은 줄이고 작은 이미지는 키운 뒤, 흑백으로 바꾸고 어두운 배경(다크모드 캡처)은 반전한다
+async function prepareImage(file) {
+  const bmp = await createImageBitmap(file);
+  let scale = Math.min(1, 2000 / bmp.width, 9000 / bmp.height);
+  if (bmp.width < 800) scale = Math.min(2, 1200 / bmp.width);
+  const w = Math.max(1, Math.round(bmp.width * scale));
+  const h = Math.max(1, Math.round(bmp.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bmp, 0, 0, w, h);
+  bmp.close?.();
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  let sum = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const g = (d[i] * 299 + d[i + 1] * 587 + d[i + 2] * 114) / 1000;
+    d[i] = d[i + 1] = d[i + 2] = g;
+    sum += g;
+  }
+  if (sum / (d.length / 4) < 110) {
+    for (let i = 0; i < d.length; i += 4) d[i] = d[i + 1] = d[i + 2] = 255 - d[i];
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas;
+}
+
+// 글자 인식이 자주 틀리는 가격 표기를 바로잡는다 (60.000 → 60,000 / 6O,OOO → 60,000)
+function fixOcrPrices(text) {
+  let t = text;
+  for (let i = 0; i < 6; i++) t = t.replace(/(\d[\d,.]*)[Oo](?=[\dOo,.]|\s|원|$)/g, '$10');   // 숫자 뒤에 이어진 O → 0
+  return t.replace(/(\d{1,3})\.(\d{3})(?!\d)/g, '$1,$2');
+}
+
+async function ocrImage(file, onStatus) {
+  onStatus('이미지 준비 중…');
+  const canvas = await prepareImage(file);
+  if (!window.Tesseract) {
+    onStatus('인식 도구를 불러오는 중…');
+    await loadScript(TESS_JS);
+  }
+  if (!ocrWorker) {
+    ocrWorker = await Tesseract.createWorker('kor', 1, {
+      langPath: TESS_LANG,
+      logger: m => {
+        if (m.status === 'loading language traineddata') onStatus('한글 인식 데이터 내려받는 중… (처음 한 번만, 약 2MB)');
+        else if (m.status === 'recognizing text') onStatus(`글자 인식 중… ${Math.round((m.progress || 0) * 100)}%`);
+      },
+    });
+  }
+  const { data } = await ocrWorker.recognize(canvas);
+  return fixOcrPrices(data.text || '');
+}
+
+async function runMenuOcr(file) {
+  if (ocrBusy) return;
+  ocrBusy = true;
+  $('#ocrLabel').classList.add('busy');
+  const status = $('#ocrStatus');
+  try {
+    const text = await ocrImage(file, msg => { status.textContent = msg; });
+    $('#pasteText').value = text.trim();
+    const items = parseMenuText(text);
+    renderPastePreview(items);
+    status.textContent = items.length
+      ? `인식 완료! ${items.length}개를 찾았어요. 아래에서 확인하고 고쳐 주세요.`
+      : '글자는 읽었지만 메뉴·가격을 찾지 못했어요. 아래 글자를 직접 고쳐서 "메뉴 인식하기"를 눌러 보세요.';
+  } catch (err) {
+    ocrWorker = null;
+    status.textContent = err.message === 'SCRIPT_LOAD_FAILED'
+      ? '인식 도구를 불러오지 못했어요. 인터넷 연결을 확인하고 다시 시도해 주세요.'
+      : '사진을 읽지 못했어요. 다른 사진으로 다시 시도해 주세요.';
+  } finally {
+    ocrBusy = false;
+    $('#ocrLabel').classList.remove('busy');
+  }
+}
+
 function renderPastePreview(items) {
   const box = $('#pastePreview');
   if (!items.length) {
@@ -1994,6 +2098,11 @@ function pasteCommit() {
 }
 
 function bindCalc() {
+  $('#menuImg').onchange = e => {
+    const file = e.target.files[0];
+    e.target.value = '';   // 같은 사진을 다시 골라도 동작하도록
+    if (file) runMenuOcr(file);
+  };
   $('#pasteParse').onclick = () => {
     if (!$('#pasteText').value.trim()) return toast('붙여넣을 메뉴 글자를 먼저 입력해 주세요.');
     renderPastePreview(parseMenuText($('#pasteText').value));
